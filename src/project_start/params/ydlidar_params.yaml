@@ -1,0 +1,36 @@
+ydlidar_ros2_driver_node:
+  ros__parameters:
+    port: /dev/lidar
+    frame_id: laser_frame
+    ignore_array: ""
+    baudrate: 230400
+    lidar_type: 1
+    device_type: 0
+    sample_rate: 4
+    intensity_bit: 0
+    abnormal_check_count: 4
+    fixed_resolution: false
+    reversion: true
+    inverted: true
+    auto_reconnect: true
+    isSingleChannel: true
+    intensity: false
+    support_motor_dtr: false
+    angle_max: 180.0
+    angle_min: -180.0
+    range_max: 12.0
+    range_min: 0.03
+    frequency: 10.0
+    # ИЗМЕНЕНО с false на true — важно для уличной навигации.
+    #
+    # При false лучи, не встретившие препятствия, возвращают 0.0. Такое
+    # значение меньше range_min, и Nav2 их просто отбрасывает: луч
+    # НИЧЕГО не сообщает. В результате однажды замеченное препятствие
+    # остаётся на костмапе навсегда — карта «зарастает» призраками,
+    # и робот начинает объезжать пустое место.
+    #
+    # При true такие лучи становятся +inf. В связке с inf_is_valid: true
+    # в nav2_params.yaml они честно очищают костмап на всю дальность
+    # raytrace_max_range. На улице, где большая часть лучей уходит
+    # в небо или за предел дальности, это принципиально.
+    invalid_range_is_inf: true
