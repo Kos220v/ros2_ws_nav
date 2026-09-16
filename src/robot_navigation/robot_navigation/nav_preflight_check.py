@@ -72,9 +72,14 @@ class Preflight(Node):
 
     def report(self, level, text):
         self.results.append((level, text))
-        log = {'OK': self.get_logger().info, 'WARN': self.get_logger().warning,
-               'FAIL': self.get_logger().error}[level]
-        log(f'[{level}] {text}')
+        # rclpy запрещает менять severity у одного и того же места вызова,
+        # поэтому три отдельных вызова, а не один через словарь.
+        if level == 'OK':
+            self.get_logger().info(f'[OK] {text}')
+        elif level == 'WARN':
+            self.get_logger().warning(f'[WARN] {text}')
+        else:
+            self.get_logger().error(f'[FAIL] {text}')
 
     def evaluate(self):
         for name, _, min_hz, required in TOPICS:
