@@ -4,8 +4,9 @@
 # Датчики:
 #   VESC (kolesa_control -> robot_odom -> /odom): ТОЛЬКО линейная скорость vx.
 #       Угол поворота по разности гусениц НЕ используется нигде.
-#   IMU (imu_stm32_bridge -> /imu/data): абсолютный курс yaw (ENU) и
-#       угловая скорость vyaw. Магнитное склонение уже учтено прошивкой STM32
+#   IMU (imu_stm32_bridge -> /imu/azimuth -> robot_odom -> /robot_odom/imu_heading):
+#       абсолютный курс yaw (ENU) из азимута компаса прошивки STM32. Гироскоп
+#       и fused-кватернион в EKF не подаются. Склонение учтено прошивкой
 #       (параметр `declination` моста), поэтому magnetic_declination_radians = 0.
 #   GNSS (/gps/fix -> navsat_transform -> /odometry/gps): позиция x, y.
 #
@@ -23,11 +24,10 @@
 #   Поэтому у robot_odom параметр publish_tf ДОЛЖЕН быть false.
 #
 # ВАЖНО ПРО КУРС: robot_localization требует АБСОЛЮТНЫЙ курс в ENU
-#   (0° = ВОСТОК, +90° = СЕВЕР). Его даёт кватернион из imu_stm32_bridge.
-#   Поправка угла монтажа платы задаётся параметром yaw_offset_deg узла
-#   robot_odom (влияет на /odom) и — для imu0 здесь — статическим TF
-#   base_link -> imu_link из URDF (robot_localization сам поворачивает данные
-#   IMU в base_link по TF). Держите оба согласованными.
+#   (0° = ВОСТОК, +90° = СЕВЕР). robot_odom пересчитывает азимут
+#   (0° = север, по часовой) в ENU и применяет поправку монтажа
+#   yaw_offset_deg; /robot_odom/imu_heading уже выдан во фрейме base_link,
+#   поэтому TF imu_link на курс не влияет.
 # ============================================================================
 
 # ---------------------------------------------------------------- ЛОКАЛЬНЫЙ EKF
@@ -69,10 +69,12 @@ ekf_filter_node_odom:
     # --- IMU: абсолютный курс (yaw) из готового кватерниона -----------------
     # Курс приходит из imu_stm32_bridge уже в ENU и с учётом склонения
     # (слияние гироскопа, акселерометра и магнитометра сделано в прошивке).
-    imu0: /imu/data
-    # Берём ТОЛЬКО абсолютный yaw из кватерниона. vyaw (гироскоп) НЕ берём:
-    # смещение нуля гироскопа EKF интегрирует в угол, и робот в RViz
-    # «вращается на месте». Ориентацию уже сфьюзила прошивка STM32.
+    imu0: /robot_odom/imu_heading
+    # Курс — из АЗИМУТА прошивки STM32 (tilt-compensated компас), упакованного
+    # узлом robot_odom в sensor_msgs/Imu (frame_id = base_link, offset учтён).
+    # Сырой /imu/data сюда НЕ подаём: его fused-кватернион и гироскоп плывут.
+    # Берём ТОЛЬКО yaw; vyaw (гироскоп) не берём — EKF интегрировал бы его
+    # смещение в угол, и робот в RViz «вращался на месте».
     imu0_config: [false, false, false,
                   false, false, true,
                   false, false, false,
@@ -141,10 +143,12 @@ ekf_filter_node_map:
     odom1_differential: false
     odom1_relative: false
 
-    imu0: /imu/data
-    # Берём ТОЛЬКО абсолютный yaw из кватерниона. vyaw (гироскоп) НЕ берём:
-    # смещение нуля гироскопа EKF интегрирует в угол, и робот в RViz
-    # «вращается на месте». Ориентацию уже сфьюзила прошивка STM32.
+    imu0: /robot_odom/imu_heading
+    # Курс — из АЗИМУТА прошивки STM32 (tilt-compensated компас), упакованного
+    # узлом robot_odom в sensor_msgs/Imu (frame_id = base_link, offset учтён).
+    # Сырой /imu/data сюда НЕ подаём: его fused-кватернион и гироскоп плывут.
+    # Берём ТОЛЬКО yaw; vyaw (гироскоп) не берём — EKF интегрировал бы его
+    # смещение в угол, и робот в RViz «вращался на месте».
     imu0_config: [false, false, false,
                   false, false, true,
                   false, false, false,

@@ -9,9 +9,12 @@ robot_odom/odom_node — одометрия «VESC + IMU».
     /odom/vesc  nav_msgs/Odometry   от kolesa_control: twist.linear.x —
                                     линейная скорость центра робота по
                                     тахометрам VESC.
-    /imu/data   sensor_msgs/Imu     от imu_stm32_bridge: orientation —
-                                    кватернион корпус->ENU (абсолютный курс),
-                                    angular_velocity.z — скорость рыскания.
+    /imu/azimuth std_msgs/Float32   от imu_stm32_bridge: азимут с компенсацией
+                                    наклона, 0..360° по часовой от севера
+                                    (heading_source: azimuth, по умолчанию).
+    /imu/data   sensor_msgs/Imu     гироскоп (только для twist.angular.z);
+                                    orientation используется лишь при
+                                    heading_source: quaternion.
 
 Угол поворота по разности бортов НЕ вычисляется. Гусеничная машина в
 повороте буксует, поэтому «колёсный» yaw бесполезен; курс берётся с IMU.
@@ -49,6 +52,7 @@ from rclpy.qos import QoSPresetProfiles, QoSProfile, ReliabilityPolicy, Durabili
 from geometry_msgs.msg import Quaternion, TransformStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu
+from std_msgs.msg import Float32
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
@@ -79,6 +83,12 @@ class OdomNode(Node):
         p = self.declare_parameter
         p('vesc_odom_topic', '/odom/vesc')
         p('imu_topic', '/imu/data')
+        p('azimuth_topic', '/imu/azimuth')
+        # azimuth  — курс из /imu/azimuth (тilt-compensated компас прошивки STM32,
+        #            0..360° по часовой от севера). НЕ зависит от гироскопа.
+        # quaternion — курс из orientation в /imu/data (fused-фильтр прошивки).
+        p('heading_source', 'azimuth')
+        p('azimuth_filter_alpha', 0.2)  # ЭКСП. сглаживание азимута (0..1, 1 = без фильтра)
         p('odom_topic', '/odom')
         p('odom_frame', 'odom')
         p('base_frame', 'base_link')
@@ -98,6 +108,9 @@ class OdomNode(Node):
         g = self.get_parameter
         self.vesc_topic = str(g('vesc_odom_topic').value)
         self.imu_topic = str(g('imu_topic').value)
+        self.azimuth_topic = str(g('azimuth_topic').value)
+        self.heading_source = str(g('heading_source').value).lower()
+        self.az_alpha = float(g('azimuth_filter_alpha').value)
         self.odom_topic = str(g('odom_topic').value)
         self.odom_frame = str(g('odom_frame').value)
         self.base_frame = str(g('base_frame').value)
@@ -116,6 +129,8 @@ class OdomNode(Node):
 
         if self.yaw_mode not in ('absolute', 'relative'):
             raise ValueError("yaw_mode должен быть 'absolute' или 'relative'")
+        if self.heading_source not in ('azimuth', 'quaternion'):
+            raise ValueError("heading_source должен быть 'azimuth' или 'quaternion'")
 
         # ---------------------------------------------------------- состояние
         self.x = 0.0
@@ -141,6 +156,11 @@ class OdomNode(Node):
                               durability=DurabilityPolicy.VOLATILE)
 
         self.create_subscription(Imu, self.imu_topic, self._on_imu, sensor_qos)
+        if self.heading_source == 'azimuth':
+            self.create_subscription(Float32, self.azimuth_topic, self._on_azimuth, sensor_qos)
+        self._az_filt = None   # сглаженный азимут как единичный вектор (cos, sin)
+        self.imu_pub = self.create_publisher(Imu, '~/imu_heading', 20) \
+            if self.heading_source == 'azimuth' else None
         self.create_subscription(Odometry, self.vesc_topic, self._on_vesc, vesc_qos)
         self.odom_pub = self.create_publisher(Odometry, self.odom_topic, 20)
         self.tf_broadcaster = TransformBroadcaster(self) if self.publish_tf else None
@@ -152,7 +172,8 @@ class OdomNode(Node):
         self.create_timer(1.0, self._watchdog)
 
         self.get_logger().info(
-            f'robot_odom: путь/скорость <- {self.vesc_topic}, курс <- {self.imu_topic} '
+            f'robot_odom: путь/скорость <- {self.vesc_topic}, курс <- '
+            f'{self.azimuth_topic if self.heading_source == "azimuth" else self.imu_topic + " (кватернион)"} '
             f'(yaw_mode={self.yaw_mode}, offset={math.degrees(self.yaw_offset):.1f}°, '
             f'publish_tf={self.publish_tf}) -> {self.odom_topic}'
         )
@@ -185,22 +206,13 @@ class OdomNode(Node):
 
         stamp_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
 
-        if has_orient:
-            self.imu_has_orientation = True
+        if self.heading_source == 'azimuth':
+            pass  # курс приходит из _on_azimuth
+        elif has_orient:
             yaw_raw = yaw_from_quaternion(q.x, q.y, q.z, q.w)
             if self.invert_yaw:
                 yaw_raw = -yaw_raw
-            yaw_raw = normalize_angle(yaw_raw + self.yaw_offset)
-            self.imu_yaw_raw = yaw_raw
-
-            if self.yaw_mode == 'relative':
-                if self.yaw_ref is None:
-                    self.yaw_ref = yaw_raw
-                    self.get_logger().info(
-                        f'Нулевой курс зафиксирован: {math.degrees(yaw_raw):.1f}° (ENU)')
-                self.yaw = normalize_angle(yaw_raw - self.yaw_ref)
-            else:
-                self.yaw = yaw_raw
+            self._apply_heading(normalize_angle(yaw_raw + self.yaw_offset))
         else:
             # Ориентации нет — курс НЕ трогаем и гироскоп НЕ интегрируем:
             # угол берётся только из готового кватерниона IMU.
@@ -212,6 +224,64 @@ class OdomNode(Node):
                 self._warned_imu = True
 
         self.last_imu_stamp_s = stamp_s
+
+    def _on_azimuth(self, msg: Float32):
+        """Азимут прошивки: 0..360°, по часовой от географического севера."""
+        az = float(msg.data)
+        if not math.isfinite(az):
+            return
+        # компас (CW от севера) -> ENU yaw (CCW от востока)
+        yaw_raw = math.radians(90.0 - az)
+        if self.invert_yaw:
+            yaw_raw = -yaw_raw
+        yaw_raw = normalize_angle(yaw_raw + self.yaw_offset)
+
+        # сглаживание на окружности (через вектор), чтобы не рвало на ±180°
+        c, s_ = math.cos(yaw_raw), math.sin(yaw_raw)
+        if self._az_filt is None or self.az_alpha >= 1.0:
+            self._az_filt = (c, s_)
+        else:
+            a = self.az_alpha
+            self._az_filt = (self._az_filt[0] * (1 - a) + c * a,
+                             self._az_filt[1] * (1 - a) + s_ * a)
+        yaw_f = math.atan2(self._az_filt[1], self._az_filt[0])
+
+        self.last_imu_time = self.get_clock().now()
+        self._apply_heading(yaw_f)
+        self._publish_heading_imu(yaw_f)
+
+    def _apply_heading(self, yaw_raw):
+        """Принимает абсолютный курс ENU (уже с offset) и обновляет self.yaw."""
+        self.imu_has_orientation = True
+        self.imu_yaw_raw = yaw_raw
+        if self.yaw_mode == 'relative':
+            if self.yaw_ref is None:
+                self.yaw_ref = yaw_raw
+                self.get_logger().info(
+                    f'Нулевой курс зафиксирован: {math.degrees(yaw_raw):.1f}° (ENU)')
+            self.yaw = normalize_angle(yaw_raw - self.yaw_ref)
+        else:
+            self.yaw = yaw_raw
+
+    def _publish_heading_imu(self, yaw):
+        """
+        ~/imu_heading (sensor_msgs/Imu): ориентация = курс из азимута.
+        Именно этот топик подаётся в EKF как imu0 вместо /imu/data, чтобы в
+        фильтр не попал fused-кватернион прошивки.
+        """
+        if self.imu_pub is None:
+            return
+        m = Imu()
+        m.header.stamp = self.get_clock().now().to_msg()
+        m.header.frame_id = self.base_frame   # offset уже учтён -> курс в base_link
+        m.orientation = quaternion_from_yaw(yaw)
+        cov = [0.0] * 9
+        cov[0] = cov[4] = 1.0e6
+        cov[8] = self.yaw_std ** 2
+        m.orientation_covariance = cov
+        m.angular_velocity_covariance = [-1.0] + [0.0] * 8
+        m.linear_acceleration_covariance = [-1.0] + [0.0] * 8
+        self.imu_pub.publish(m)
 
     # ------------------------------------------------------------- VESC
     def _on_vesc(self, msg: Odometry):

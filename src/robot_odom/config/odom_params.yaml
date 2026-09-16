@@ -1,7 +1,10 @@
 robot_odom:
   ros__parameters:
     vesc_odom_topic: /odom/vesc      # скорость с VESC (kolesa_control)
-    imu_topic: /imu/data             # курс с imu_stm32_bridge
+    imu_topic: /imu/data             # гироскоп (справочно)
+    azimuth_topic: /imu/azimuth      # курс: азимут компаса прошивки STM32
+    heading_source: azimuth          # azimuth | quaternion
+    azimuth_filter_alpha: 0.2        # сглаживание азимута (1.0 = выкл)
     odom_topic: /odom
     odom_frame: odom
     base_frame: base_link

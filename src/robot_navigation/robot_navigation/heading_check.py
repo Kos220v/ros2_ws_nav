@@ -60,7 +60,8 @@ class HeadingCheck(Node):
         else:
             parts.append('IMU: нет данных')
         if self.az is not None:
-            parts.append(f'STM32 азимут={self.az.data:5.1f}°')
+            enu = (90.0 - self.az.data + 180.0) % 360.0 - 180.0
+            parts.append(f'STM32 азимут={self.az.data:5.1f}° (ENU {enu:6.1f}°) [источник курса]')
         if self.odom is not None:
             parts.append(f'/odom yaw={yaw_of(self.odom.pose.pose.orientation):7.1f}°')
         if self.glob is not None:
