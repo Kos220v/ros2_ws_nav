@@ -132,7 +132,7 @@ def launch_setup(context, *args, **kwargs):
             # Калибровка одометрии VESC (см. kolesa_control/README.md)
             'tacho_counts_per_revolution': 2157.0,
             'distance_per_revolution': 2.011,
-            'odometry_scale': 1.0,
+            'odometry_scale': 1.15,   # замер: рулетка 14.12 м / одометрия 12.28 м
             'invert_left': False,
             'invert_right': True,
             'encoder_invert_left': False,
