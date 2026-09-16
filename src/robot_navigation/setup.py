@@ -17,7 +17,7 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml') + glob('config/*.xml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -30,21 +30,14 @@ setup(
         'console_scripts': [
             # Проезд маршрута из YAML через экшен /follow_gps_waypoints
             'gps_waypoint_commander = robot_navigation.gps_waypoint_commander:main',
+            # Поездка в одну точку (GPS / map / относительно робота)
+            'goto_point = robot_navigation.goto_point:main',
             # Запись маршрута: сохраняет текущую позицию робота в YAML
             'gps_waypoint_logger = robot_navigation.gps_waypoint_logger:main',
-            # Обработка магнитометра: калибровка, угол монтажа, склонение
-            # (/imu/mag_raw -> /imu/mag)
-            'mag_declination_node = robot_navigation.mag_declination_node:main',
-            # Калибровка магнитометра вращением робота
-            'mag_calibrator = robot_navigation.mag_calibrator:main',
-            # Сверка курса робота с реальным азимутом
+            # Сверка курса IMU с реальным азимутом (угол монтажа платы)
             'heading_check = robot_navigation.heading_check:main',
             # Диагностика готовности стека перед выездом
             'nav_preflight_check = robot_navigation.nav_preflight_check:main',
-            # Проверка датчиков на шине I2C (работает без запущенного стека)
-            'i2c_check = robot_navigation.i2c_check:main',
-            # Пробная поездка на заданное расстояние (проверка связки с Nav2)
-            'send_test_goal = robot_navigation.send_test_goal:main',
         ],
     },
 )

@@ -4,8 +4,11 @@
 
   СИСТЕМА КООРДИНАТ (REP-103): X — вперёд, Y — влево, Z — вверх.
 
-  Вариант Б: раздельные фреймы для магнитометра и GPS-антенны.
-  Оба смонтированы в разных местах робота.
+  Фреймы датчиков: imu_link (плата STM32 с MPU6050+QMC5883L), gps_link
+  (антенна GNSS), laser_frame (лидар). robot_localization поворачивает данные
+  IMU в base_link по TF base_link -> imu_link, поэтому rpy у imu_joint должен
+  соответствовать реальной ориентации платы (X платы вперёд, Y влево, Z вверх
+  -> rpy="0 0 0"; плата повёрнута на 90° против часовой -> rpy="0 0 1.5708").
 -->
 <robot name="tracked_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
@@ -19,8 +22,22 @@
 
   <!-- ============ координаты датчиков (ПРАВЬТЕ ЗДЕСЬ) ============ -->
   <xacro:property name="imu_xyz"  value="0.135 -0.275 0.4" />
+  <xacro:property name="imu_rpy"  value="0 0 0" />          <!-- ориентация платы IMU -->
   <xacro:property name="gps_xyz"  value="0.10  -0.100 0.42" /> <!-- GPS-антенна -->
   <xacro:property name="laser_xyz" value="-0.21  0.16  0.55" />
+
+  <!-- ============ IMU (STM32: MPU6050 + QMC5883L) ============ -->
+  <link name="imu_link">
+    <visual>
+      <geometry><box size="0.04 0.02 0.005"/></geometry>
+      <material name="black"/>
+    </visual>
+  </link>
+  <joint name="base_to_imu" type="fixed">
+    <parent link="base_link"/>
+    <child  link="imu_link"/>
+    <origin xyz="${imu_xyz}" rpy="${imu_rpy}"/>
+  </joint>
 
   <!-- ============ GPS-антенна (отдельный модуль) ============ -->
   <link name="gps_link">

@@ -4,20 +4,23 @@
 """
 bringup.launch.py — запуск ВСЕГО стека автономного робота одной командой.
 
+    # улица, маршрут по GPS
     ros2 launch robot_navigation bringup.launch.py \\
-        declination_deg:=17.21 \\
-        waypoints_file:=/home/admin/route.yaml
+        declination_deg:=11.9 \\
+        waypoints_file:=/home/pi/route.yaml
 
-Порядок запуска не случаен и задан таймерами:
+    # помещение / стенд, без GPS: автономный объезд и цели в метрах
+    ros2 launch robot_navigation bringup.launch.py use_gps:=false
 
-    0 c   железо: моторы, GNSS, IMU, магнитометр, пульт, TF
-          (гироскоп калибруется в первые ~4 секунды — робот должен стоять)
-    8 c   локализация: фильтр курса, два EKF, navsat_transform
-          (к этому моменту уже идут данные со всех датчиков)
+Порядок запуска задан таймерами:
+
+    0 c   железо: VESC, IMU, robot_odom, GNSS, пульт, TF
+          (гироскоп STM32 калибруется первые секунды — робот должен стоять)
+    8 c   локализация: EKF (odom->base_link), EKF (map->odom), navsat_transform
    10 c   лидар (его мотор вибрирует, поэтому включается ПОСЛЕ калибровки;
-          задержка задаётся внутри start.launch.py аргументом lidar_delay)
+          задержка задаётся аргументом lidar_delay)
    15 c   Nav2 (нужна готовая TF-цепочка map -> odom -> base_link)
-   20 c   командир маршрута (ждёт экшен Nav2)
+   20 c   командир маршрута (ждёт экшен Nav2) и goto_point (цели по топикам)
 
 Робот НЕ ПОЕДЕТ сразу после запуска. Командир маршрута стартует выключенным
 и ждёт либо перевода тумблера пульта в режим AUTO, либо вызова сервиса
@@ -29,11 +32,9 @@ bringup.launch.py — запуск ВСЕГО стека автономного 
 ЗАМЕЧАНИЕ ПРО УСЛОВИЯ ЗАПУСКА
 -----------------------------
 Условия (condition=IfCondition(...)) навешены прямо на действия, а не через
-GroupAction. GroupAction создаёт отдельную область видимости для аргументов
-launch, и вложенные в неё TimerAction, у которых period задан подстановкой,
-падают с ошибкой "launch configuration ... does not exist" — область
-закрывается раньше, чем таймер успевает вычислить своё значение. Без лишней
-обёртки такой проблемы не возникает в принципе.
+GroupAction: GroupAction создаёт отдельную область видимости для аргументов
+launch, и вложенные TimerAction с period-подстановкой падают с ошибкой
+"launch configuration ... does not exist".
 """
 
 import os
@@ -63,8 +64,16 @@ def generate_launch_description():
     args = [
         DeclareLaunchArgument(
             'declination_deg', default_value='11.9',
-            description='Магнитное склонение в градусах для вашей местности. '
+            description='Магнитное склонение в градусах (+ восточное). '
                         'Узнать: https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml'),
+        DeclareLaunchArgument(
+            'imu_yaw_offset_deg', default_value='0.0',
+            description='Поправка угла монтажа IMU относительно оси X робота, '
+                        'градусы (+ против часовой). Определяется heading_check'),
+        DeclareLaunchArgument(
+            'use_gps', default_value='true',
+            description='true — уличная навигация по GNSS; false — без GPS '
+                        '(map == odom, цели в метрах, автономный объезд)'),
         DeclareLaunchArgument(
             'waypoints_file', default_value=default_waypoints,
             description='YAML-файл с маршрутом из GPS-точек'),
@@ -76,23 +85,20 @@ def generate_launch_description():
             description='Запускать слой железа (false — если он уже запущен)'),
         DeclareLaunchArgument(
             'use_navigation', default_value='true',
-            description='Запускать Nav2 (false — только локализация, '
-                        'для отладки положения и курса)'),
+            description='Запускать Nav2 (false — только локализация)'),
         DeclareLaunchArgument(
             'use_commander', default_value='true',
-            description='Запускать командира маршрута'),
+            description='Запускать командира GPS-маршрута'),
         DeclareLaunchArgument(
             'lidar_delay', default_value='10.0',
             description='Задержка старта лидара, сек'),
-        DeclareLaunchArgument(
-            'mag_i2c_bus', default_value='1',
-            description='Номер шины I2C для магнитометра '
-                        '(если он вынесен на отдельную шину)'),
         DeclareLaunchArgument(
             'nav2_params_file',
             default_value=os.path.join(nav_share, 'config', 'nav2_params.yaml'),
             description='Файл параметров Nav2'),
     ]
+
+    use_gps = LaunchConfiguration('use_gps')
 
     # ------------------------------------------------------- слой 1: железо
     hardware = IncludeLaunchDescription(
@@ -101,14 +107,17 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration('use_hardware')),
         launch_arguments={
             'lidar_delay': LaunchConfiguration('lidar_delay'),
-            'mag_i2c_bus': LaunchConfiguration('mag_i2c_bus'),
+            'use_gps': use_gps,
+            'declination_deg': LaunchConfiguration('declination_deg'),
+            'imu_yaw_offset_deg': LaunchConfiguration('imu_yaw_offset_deg'),
+            'odom_publish_tf': 'false',   # TF odom->base_link даёт EKF
+            'odom_yaw_mode': 'absolute',
         }.items(),
     )
 
     # -------------------------------------------------- слой 2: локализация
-    # Ждём 8 секунд: за это время mpu6050 успевает откалибровать ноль
-    # гироскопа, а драйверы — открыть порты. Если поднять EKF раньше, он
-    # получит поток с ещё не устоявшимся смещением и «уедет» по курсу.
+    # Ждём 8 секунд: STM32 успевает откалибровать ноль гироскопа и выдать
+    # устойчивый кватернион, драйверы — открыть порты.
     localization = TimerAction(
         period=8.0,
         actions=[
@@ -116,16 +125,14 @@ def generate_launch_description():
                 PythonLaunchDescriptionSource(
                     os.path.join(nav_share, 'launch', 'localization.launch.py')),
                 launch_arguments={
-                    'declination_deg': LaunchConfiguration('declination_deg'),
+                    'use_gps': use_gps,
+                    'start_odom': 'false',   # robot_odom уже в слое железа
                 }.items(),
             ),
         ],
     )
 
     # ------------------------------------------------------ слой 3: Nav2
-    # Ждём 15 секунд: костмапам Nav2 при старте нужна готовая TF-цепочка
-    # map -> odom -> base_link, иначе они сыплют ошибками трансформа
-    # и уходят в состояние failure.
     navigation = TimerAction(
         period=15.0,
         actions=[
@@ -140,7 +147,7 @@ def generate_launch_description():
         ],
     )
 
-    # ------------------------------------------------ слой 4: командир маршрута
+    # ------------------------------------------------ слой 4: командиры
     commander = TimerAction(
         period=20.0,
         actions=[
@@ -152,16 +159,21 @@ def generate_launch_description():
                 condition=IfCondition(LaunchConfiguration('use_commander')),
                 parameters=[{
                     'waypoints_file': LaunchConfiguration('waypoints_file'),
-                    # Тип указан явно. Иначе launch угадывает его по строке:
-                    # "0" стало бы целым, а вот "2" при объявленном float
-                    # параметре дало бы ошибку несовпадения типов.
                     'number_of_loops': ParameterValue(
                         LaunchConfiguration('number_of_loops'), value_type=int),
                     # Никогда не стартуем сами: только по пульту или по сервису.
                     'autostart': False,
                     'use_rc_mode': True,
-                    'require_gps_fix': True,
+                    'require_gps_fix': ParameterValue(use_gps, value_type=bool),
                 }],
+            ),
+            # Приём одиночных целей по топикам /goto/gps, /goto/pose
+            Node(
+                package='robot_navigation',
+                executable='goto_point',
+                name='goto_point',
+                output='screen',
+                condition=IfCondition(LaunchConfiguration('use_navigation')),
             ),
         ],
     )

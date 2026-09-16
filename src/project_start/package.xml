@@ -2,10 +2,24 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>project_start</name>
-  <version>0.0.0</version>
-  <description>TODO: Package description</description>
-  <maintainer email="admin@todo.todo">admin</maintainer>
-  <license>TODO: License declaration</license>
+  <version>0.1.0</version>
+  <description>Слой железа гусеничного робота: launch-файлы и параметры драйверов.</description>
+  <maintainer email="admin@example.com">admin</maintainer>
+  <license>Apache License 2.0</license>
+
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>kolesa_control</exec_depend>
+  <exec_depend>robot_odom</exec_depend>
+  <exec_depend>imu_stm32_bridge</exec_depend>
+  <exec_depend>elrs_receiver</exec_depend>
+  <exec_depend>cmd_switcher</exec_depend>
+  <exec_depend>relay_reliable</exec_depend>
+  <exec_depend>tracked_robot_description</exec_depend>
+  <exec_depend>ydlidar_ros2_driver</exec_depend>
+  <exec_depend>nmea_navsat_driver</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

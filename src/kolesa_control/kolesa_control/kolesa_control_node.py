@@ -6,16 +6,27 @@
 Дифференциальное управление гусеничным роботом через два контроллера
 FS75100 / VESC по UART.
 
+ОДОМЕТРИЯ
+---------
+Узел считает ТОЛЬКО то, что достоверно измеряет VESC: пройденный путь и
+линейную скорость каждой гусеницы по абсолютному тахометру. Угол поворота
+(yaw) здесь НЕ вычисляется — гусеничная машина в повороте проскальзывает,
+и разность тиков бортов не имеет отношения к реальному курсу. Курс берётся
+с инерциального модуля (imu_stm32_bridge) узлом robot_odom, который
+объединяет дистанцию VESC и ориентацию IMU в /odom.
+
 Подписки:
   /cmd_vel            geometry_msgs/Twist
 
 Публикации:
+  /odom/vesc          nav_msgs/Odometry
+      Только скорость: twist.linear.x — скорость центра робота, м/с.
+      Поза и угловая скорость намеренно не заполняются (ковариация 1e6),
+      чтобы их никто случайно не «сфьюзил».
   /joint_states       sensor_msgs/JointState
-      Плоская поза робота: position = [X, Y, yaw], где X/Y заданы в
-      метрах, yaw — в радианах. Имена полей задаются параметрами
-      robot_x_joint, robot_y_joint и robot_yaw_joint.
+      Положение (рад) и скорость (рад/с) левой и правой гусениц.
   /kolesa/diagnostics diagnostic_msgs/DiagnosticArray
-      Содержит в том числе текущий угол поворота.
+      Напряжение, скважность, обороты, тики, пройденный путь по бортам.
 """
 
 import math
@@ -26,18 +37,23 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 
 from .vesc_driver import VescDriver
 
 
+# Ковариация «это значение не измерено, не используйте его».
+UNMEASURED_COV = 1.0e6
+
+
 def velocity_to_duty_cycle(velocity, max_velocity, duty_min=0.03, duty_max=1.0):
     """
     Преобразует целевую скорость в скважность (duty cycle) для VESC.
 
-    ВАЖНО: Эта функция ожидает, что направление уже учтено в знаке velocity.
-    Она НЕ должна знать про настройки invert_left/right.
+    Направление уже учтено в знаке velocity; функция ничего не знает
+    про invert_left/right.
     """
     if abs(velocity) < 0.001:
         return 0.0
@@ -48,7 +64,7 @@ def velocity_to_duty_cycle(velocity, max_velocity, duty_min=0.03, duty_max=1.0):
 
 
 def delta_i32(current, previous):
-    """Разница двух int32-счетчиков с учетом переполнения."""
+    """Разница двух int32-счётчиков с учётом переполнения."""
     current = int(current)
     previous = int(previous)
     delta = current - previous
@@ -57,11 +73,6 @@ def delta_i32(current, previous):
     elif delta < -2147483648:
         delta += 4294967296
     return delta
-
-
-def normalize_angle(angle):
-    """Приводит угол (рад) к диапазону (-pi, pi]."""
-    return math.atan2(math.sin(angle), math.cos(angle))
 
 
 class KolesaControl(Node):
@@ -75,15 +86,13 @@ class KolesaControl(Node):
         p("right_port", "/dev/ttyAMA5")
         p("baud", 115200)
 
-        # Геометрия шасси
-        p("wheel_separation", 0.55)
+        # Геометрия шасси (нужна только для раскладки cmd_vel по бортам)
+        p("wheel_separation", 0.48)
 
         # Калибровка одометрии по оборотам выходного вала
         p("tacho_counts_per_revolution", 2157.0)
         p("distance_per_revolution", 2.011)
         p("odometry_scale", 1.0)
-        p("turn_counts_per_rad_left", 384.16)
-        p("turn_counts_per_rad_right", 344.73)
 
         # Инверсии
         p("invert_left", False)
@@ -106,11 +115,14 @@ class KolesaControl(Node):
         p("tacho_jump_margin", 3.0)
         p("min_tacho_jump_threshold", 500.0)
 
-        # Публикация и joint states
+        # Публикации
+        p("publish_odom", True)
+        p("odom_topic", "odom/vesc")
+        p("odom_frame", "odom")
+        p("base_frame", "base_link")
         p("publish_joint_states", True)
-        p("robot_x_joint", "robot_x")
-        p("robot_y_joint", "robot_y")
-        p("robot_yaw_joint", "robot_yaw")
+        p("left_wheel_joint", "left_track_joint")
+        p("right_wheel_joint", "right_track_joint")
         p("publish_diagnostics", True)
 
         g = self.get_parameter
@@ -125,9 +137,6 @@ class KolesaControl(Node):
         self.odometry_scale = float(g("odometry_scale").value)
 
         self.radius = self.distance_per_revolution / (2.0 * math.pi)
-
-        self.turn_counts_per_rad_left = float(g("turn_counts_per_rad_left").value)
-        self.turn_counts_per_rad_right = float(g("turn_counts_per_rad_right").value)
 
         self.kin_inv_left = -1 if g("invert_left").value else 1
         self.kin_inv_right = -1 if g("invert_right").value else 1
@@ -146,11 +155,14 @@ class KolesaControl(Node):
         self.tacho_jump_margin = float(g("tacho_jump_margin").value)
         self.min_tacho_jump_threshold = float(g("min_tacho_jump_threshold").value)
 
+        self.pub_odom = bool(g("publish_odom").value)
+        self.odom_topic = str(g("odom_topic").value)
+        self.odom_frame = str(g("odom_frame").value)
+        self.base_frame = str(g("base_frame").value)
         self.pub_js = bool(g("publish_joint_states").value)
+        self.left_joint = str(g("left_wheel_joint").value)
+        self.right_joint = str(g("right_wheel_joint").value)
         self.pub_diag = bool(g("publish_diagnostics").value)
-        self.robot_x_joint = str(g("robot_x_joint").value)
-        self.robot_y_joint = str(g("robot_y_joint").value)
-        self.robot_yaw_joint = str(g("robot_yaw_joint").value)
 
         self._validate_params()
 
@@ -172,10 +184,8 @@ class KolesaControl(Node):
             f"({self.distance_per_tacho_count * 1000.0:.5f} мм/тик)"
         )
         self.get_logger().info(
-            f"  Поворот (yaw): {self.turn_counts_per_rad_left:.2f} тиков/рад (левое), "
-            f"{self.turn_counts_per_rad_right:.2f} тиков/рад (правое)"
+            "  Курс (yaw) по гусеницам НЕ считается — его даёт IMU (robot_odom)."
         )
-        self.get_logger().info("  Логика: pos/distance — абсолютный тахометр, speed/omega — дельты.")
         self.get_logger().info("=" * 60)
 
         # ----------------------------------------------------------- драйверы
@@ -189,21 +199,16 @@ class KolesaControl(Node):
         self.cmd_w = 0.0
         self.last_cmd_time = self.get_clock().now()
 
-        self.robot_x = 0.0
-        self.robot_y = 0.0
-        self.robot_yaw = 0.0
-        self.theta_z = None
-        self._pose_prev_offsets = None
-
         self.wheels = {
             "left": self._make_wheel_state(),
             "right": self._make_wheel_state(),
         }
-        self._warned_no_tacho = {"left": False, "right": False}
 
         # ----------------------------------------------------------- топики
         self.create_subscription(Twist, "cmd_vel", self._on_cmd_vel, 10)
 
+        if self.pub_odom:
+            self.odom_pub = self.create_publisher(Odometry, self.odom_topic, 20)
         if self.pub_js:
             self.js_pub = self.create_publisher(JointState, "joint_states", 10)
         if self.pub_diag:
@@ -215,7 +220,7 @@ class KolesaControl(Node):
         self.create_timer(1.0 / self.control_rate, self._control_tick)
         self.create_timer(1.0 / self.telemetry_rate, self._telemetry_tick)
 
-        self.get_logger().info("kolesa_control запущена (абсолютный тахометр)")
+        self.get_logger().info("kolesa_control запущена (абсолютный тахометр VESC)")
 
     # ------------------------------------------------------------- параметры
     def _validate_params(self):
@@ -236,11 +241,6 @@ class KolesaControl(Node):
             raise ValueError("Некорректные duty_min/duty_max (должно быть 0 <= duty_min < duty_max)")
         if self.duty_max > 1.0:
             raise ValueError("duty_max не может быть больше 1.0 (100% скважности)")
-        if self.turn_counts_per_rad_left <= 0.0 or self.turn_counts_per_rad_right <= 0.0:
-            raise ValueError(
-                "turn_counts_per_rad_left/right должны быть > 0 "
-                "(калибровка поворота вокруг оси Z)"
-            )
 
     def _make_wheel_state(self):
         return {
@@ -249,9 +249,10 @@ class KolesaControl(Node):
             "prev_tacho": None,
             "initial_tacho": None,
             "total_abs_counts": 0,
-            "turn_offset_ticks": 0.0,
             "last_delta_counts": 0, "erpm": 0.0,
             "duty_measured": 0.0, "duty_target": 0.0,
+            "voltage": 0.0, "current_motor": 0.0, "temp_fet": 0.0,
+            "fault": 0,
             "last_rx_time": None, "last_tacho_time": None,
             "telemetry_age": float("inf"), "stale": True,
         }
@@ -287,16 +288,10 @@ class KolesaControl(Node):
         v_right_final = v_right_target * self.kin_inv_right
 
         duty_left = velocity_to_duty_cycle(
-            v_left_final,
-            self.max_linear_velocity,
-            self.duty_min,
-            self.duty_max,
+            v_left_final, self.max_linear_velocity, self.duty_min, self.duty_max,
         )
         duty_right = velocity_to_duty_cycle(
-            v_right_final,
-            self.max_linear_velocity,
-            self.duty_min,
-            self.duty_max,
+            v_right_final, self.max_linear_velocity, self.duty_min, self.duty_max,
         )
 
         self.wheels["left"]["duty_target"] = duty_left
@@ -316,8 +311,9 @@ class KolesaControl(Node):
         self._update_wheel_from_tacho("right", tr, direction_sign=self.enc_inv_right)
         self._update_stale_state("left")
         self._update_stale_state("right")
-        self._update_robot_pose()
 
+        if self.pub_odom:
+            self._publish_odom()
         if self.pub_js:
             self._publish_joint_states()
         if self.pub_diag:
@@ -330,14 +326,7 @@ class KolesaControl(Node):
             return
 
         if "tachometer" not in telemetry:
-            if not self._warned_no_tacho[side]:
-                self.get_logger().warning(
-                    f"[{side}] в телеметрии нет поля 'tachometer'."
-                )
-                self._warned_no_tacho[side] = True
             return
-
-        self._warned_no_tacho[side] = False
 
         rx_time_raw = telemetry.get("_rx_time", None)
         if rx_time_raw is not None:
@@ -362,6 +351,10 @@ class KolesaControl(Node):
         raw_erpm = telemetry.get("erpm", telemetry.get("rpm", 0.0))
         st["erpm"] = float(raw_erpm)
         st["duty_measured"] = float(telemetry.get("duty", 0.0))
+        st["voltage"] = float(telemetry.get("v_in", telemetry.get("voltage", 0.0)) or 0.0)
+        st["current_motor"] = float(telemetry.get("current_motor", 0.0) or 0.0)
+        st["temp_fet"] = float(telemetry.get("temp_fet", telemetry.get("temp_mos", 0.0)) or 0.0)
+        st["fault"] = int(telemetry.get("fault", telemetry.get("fault_code", 0)) or 0)
 
         if st["initial_tacho"] is None:
             st["initial_tacho"] = current_tacho
@@ -370,14 +363,12 @@ class KolesaControl(Node):
             st["speed"] = 0.0
             st["omega"] = 0.0
             st["last_delta_counts"] = 0
-            st["turn_offset_ticks"] = 0.0
             self.get_logger().info(f"[{side}] initial_tacho = {current_tacho}")
             return
 
         offset = delta_i32(current_tacho, st["initial_tacho"]) * direction_sign
         st["pos"] = offset * self.rad_per_tacho_count * self.odometry_scale
         st["distance"] = offset * self.distance_per_tacho_count * self.odometry_scale
-        st["turn_offset_ticks"] = float(offset)
 
         dt = rx_time - st["last_tacho_time"]
         delta_raw = delta_i32(current_tacho, st["prev_tacho"])
@@ -440,69 +431,58 @@ class KolesaControl(Node):
         else:
             st["stale"] = False
 
-    def _update_robot_pose(self):
-        """Интегрирует X, Y и yaw по эмпирической калибровке тиков обоих бортов."""
+    # ------------------------------------------------------------- публикации
+    def _both_tracks_valid(self):
+        left = self.wheels["left"]
+        right = self.wheels["right"]
+        return (
+            left["initial_tacho"] is not None
+            and right["initial_tacho"] is not None
+            and not left["stale"]
+            and not right["stale"]
+        )
+
+    def _publish_odom(self):
+        """
+        /odom/vesc: ТОЛЬКО линейная скорость центра робота.
+
+        Поза и угловая скорость не измеряются (ковариация 1e6). Курс даёт
+        IMU, интеграцию в X/Y выполняет robot_odom.
+        """
         left = self.wheels["left"]
         right = self.wheels["right"]
 
-        if (
-            left["initial_tacho"] is None
-            or right["initial_tacho"] is None
-            or left["stale"]
-            or right["stale"]
-        ):
-            self._pose_prev_offsets = None
-            return
+        msg = Odometry()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.odom_frame
+        msg.child_frame_id = self.base_frame
 
-        current_offsets = (
-            left["turn_offset_ticks"],
-            right["turn_offset_ticks"],
-        )
+        valid = self._both_tracks_valid()
+        v_center = 0.5 * (left["speed"] + right["speed"]) if valid else 0.0
 
-        if self._pose_prev_offsets is None:
-            self._pose_prev_offsets = current_offsets
-            self.theta_z = self.robot_yaw
-            return
+        msg.twist.twist.linear.x = v_center
 
-        delta_left = current_offsets[0] - self._pose_prev_offsets[0]
-        delta_right = current_offsets[1] - self._pose_prev_offsets[1]
-        self._pose_prev_offsets = current_offsets
+        # Все компоненты — «не измерено», кроме vx.
+        twist_cov = [0.0] * 36
+        for i in range(6):
+            twist_cov[i * 6 + i] = UNMEASURED_COV
+        twist_cov[0] = 0.01 if valid else UNMEASURED_COV  # vx: ±0.1 м/с
+        msg.twist.covariance = twist_cov
 
-        distance_left = (
-            delta_left * self.distance_per_tacho_count * self.odometry_scale
-        )
-        distance_right = (
-            delta_right * self.distance_per_tacho_count * self.odometry_scale
-        )
-        distance_center = (distance_left + distance_right) / 2.0
+        pose_cov = [0.0] * 36
+        for i in range(6):
+            pose_cov[i * 6 + i] = UNMEASURED_COV
+        msg.pose.covariance = pose_cov
+        msg.pose.pose.orientation.w = 1.0
 
-        # ИСПРАВЛЕНИЕ: инвертирован знак d_theta для ROS-совместимости
-        d_theta = 0.5 * (
-            (delta_left / self.turn_counts_per_rad_left)
-            - (delta_right / self.turn_counts_per_rad_right)
-        )
+        self.odom_pub.publish(msg)
 
-        mid_theta = self.robot_yaw + d_theta / 2.0
-        self.robot_x += distance_center * math.cos(mid_theta)
-        self.robot_y += distance_center * math.sin(mid_theta)
-        self.robot_yaw += d_theta
-        self.robot_yaw = normalize_angle(self.robot_yaw)
-        self.theta_z = self.robot_yaw
-
-    # ------------------------------------------------------------- публикации
     def _publish_joint_states(self):
         js = JointState()
         js.header.stamp = self.get_clock().now().to_msg()
-        js.name = [
-            self.robot_x_joint,
-            self.robot_y_joint,
-            self.robot_yaw_joint,
-        ]
-        js.position = [
-            self.robot_x,
-            self.robot_y,
-            normalize_angle(self.robot_yaw),
-        ]
+        js.name = [self.left_joint, self.right_joint]
+        js.position = [self.wheels["left"]["pos"], self.wheels["right"]["pos"]]
+        js.velocity = [self.wheels["left"]["omega"], self.wheels["right"]["omega"]]
         self.js_pub.publish(js)
 
     def _publish_diagnostics(self):
@@ -510,7 +490,7 @@ class KolesaControl(Node):
         arr.header.stamp = self.get_clock().now().to_msg()
         self._append_wheel_diag(arr, "left", "Левая гусеница", self.left)
         self._append_wheel_diag(arr, "right", "Правая гусеница", self.right)
-        self._append_yaw_diag(arr)
+        self._append_odom_diag(arr)
         self.diag_pub.publish(arr)
 
     def _append_wheel_diag(self, arr, side, display_name, driver):
@@ -525,6 +505,9 @@ class KolesaControl(Node):
         elif st["stale"]:
             status.level = DiagnosticStatus.WARN
             status.message = "Телеметрия устарела"
+        elif st["fault"]:
+            status.level = DiagnosticStatus.ERROR
+            status.message = f"VESC fault code {st['fault']}"
         else:
             status.level = DiagnosticStatus.OK
             status.message = "Норма"
@@ -533,53 +516,70 @@ class KolesaControl(Node):
             st["total_abs_counts"] / self.tacho_counts_per_revolution
         )
 
-        status.values.append(KeyValue(key="connected", value=str(driver.connected)))
-        status.values.append(KeyValue(
+        kv = status.values.append
+        kv(KeyValue(key="connected", value=str(driver.connected)))
+        kv(KeyValue(
             key="telemetry_age_s",
             value="inf" if math.isinf(st["telemetry_age"]) else f"{st['telemetry_age']:.3f}",
         ))
-        status.values.append(KeyValue(key="raw_tachometer", value=str(st["raw_tacho"])))
-        status.values.append(KeyValue(key="raw_tachometer_abs", value=str(st["raw_tacho_abs"])))
-        status.values.append(KeyValue(key="initial_tacho", value=str(st["initial_tacho"])))
-        status.values.append(KeyValue(key="last_delta_counts", value=str(st["last_delta_counts"])))
-        status.values.append(KeyValue(key="total_abs_counts", value=str(st["total_abs_counts"])))
-        status.values.append(KeyValue(key="total_abs_revolutions", value=f"{total_abs_revolutions:.2f}"))
-        status.values.append(KeyValue(key="turn_offset_ticks", value=f"{st['turn_offset_ticks']:.1f}"))
-        status.values.append(KeyValue(key="duty_target", value=f"{st['duty_target']:.3f}"))
-        status.values.append(KeyValue(key="duty_measured", value=f"{st['duty_measured']:.3f}"))
-        status.values.append(KeyValue(key="erpm", value=f"{st['erpm']:.1f}"))
-        status.values.append(KeyValue(key="speed_m_s", value=f"{st['speed']:.3f}"))
-        status.values.append(KeyValue(key="omega_rad_s", value=f"{st['omega']:.3f}"))
+        kv(KeyValue(key="raw_tachometer", value=str(st["raw_tacho"])))
+        kv(KeyValue(key="raw_tachometer_abs", value=str(st["raw_tacho_abs"])))
+        kv(KeyValue(key="initial_tacho", value=str(st["initial_tacho"])))
+        kv(KeyValue(key="last_delta_counts", value=str(st["last_delta_counts"])))
+        kv(KeyValue(key="total_abs_counts", value=str(st["total_abs_counts"])))
+        kv(KeyValue(key="total_abs_revolutions", value=f"{total_abs_revolutions:.2f}"))
+        kv(KeyValue(key="distance_m", value=f"{st['distance']:.3f}"))
+        kv(KeyValue(key="duty_target", value=f"{st['duty_target']:.3f}"))
+        kv(KeyValue(key="duty_measured", value=f"{st['duty_measured']:.3f}"))
+        kv(KeyValue(key="erpm", value=f"{st['erpm']:.1f}"))
+        kv(KeyValue(key="speed_m_s", value=f"{st['speed']:.3f}"))
+        kv(KeyValue(key="omega_rad_s", value=f"{st['omega']:.3f}"))
+        kv(KeyValue(key="voltage_v", value=f"{st['voltage']:.2f}"))
+        kv(KeyValue(key="current_motor_a", value=f"{st['current_motor']:.2f}"))
+        kv(KeyValue(key="temp_fet_c", value=f"{st['temp_fet']:.1f}"))
+        kv(KeyValue(key="fault", value=str(st["fault"])))
         arr.status.append(status)
 
-    def _append_yaw_diag(self, arr):
-        status = DiagnosticStatus()
-        status.name = "Поза робота (X, Y, yaw)"
-        status.hardware_id = "kolesa_control/pose"
+    def _append_odom_diag(self, arr):
+        left = self.wheels["left"]
+        right = self.wheels["right"]
 
-        if self.theta_z is None:
+        status = DiagnosticStatus()
+        status.name = "Одометрия VESC (скорость и путь)"
+        status.hardware_id = "kolesa_control/odom"
+
+        if not self._both_tracks_valid():
             status.level = DiagnosticStatus.WARN
-            status.message = "Нет данных (ожидание телеметрии обоих колёс)"
-            theta_raw = 0.0
-            theta_wrapped = 0.0
+            status.message = "Нет данных (ожидание телеметрии обоих бортов)"
         else:
             status.level = DiagnosticStatus.OK
             status.message = "Норма"
-            theta_raw = self.theta_z
-            theta_wrapped = normalize_angle(self.theta_z)
 
-        status.values.append(KeyValue(key="robot_x_m", value=f"{self.robot_x:.4f}"))
-        status.values.append(KeyValue(key="robot_y_m", value=f"{self.robot_y:.4f}"))
-        status.values.append(KeyValue(key="theta_z_raw_rad", value=f"{theta_raw:.4f}"))
-        status.values.append(KeyValue(key="theta_z_rad", value=f"{theta_wrapped:.4f}"))
-        status.values.append(KeyValue(key="theta_z_deg", value=f"{math.degrees(theta_wrapped):.2f}"))
+        v_center = 0.5 * (left["speed"] + right["speed"])
+        d_center = 0.5 * (left["distance"] + right["distance"])
+        # Оценка скорости поворота по разности бортов — ТОЛЬКО для контроля
+        # пробуксовки (сравнить с гироскопом). В одометрию не идёт.
+        w_tracks_est = (right["speed"] - left["speed"]) / self.separation
+
+        status.values.append(KeyValue(key="v_center_m_s", value=f"{v_center:.3f}"))
+        status.values.append(KeyValue(key="distance_center_m", value=f"{d_center:.3f}"))
         status.values.append(KeyValue(
-            key="turn_counts_per_rad_left", value=f"{self.turn_counts_per_rad_left:.2f}",
-        ))
-        status.values.append(KeyValue(
-            key="turn_counts_per_rad_right", value=f"{self.turn_counts_per_rad_right:.2f}",
+            key="track_yaw_rate_est_rad_s_(diag_only)", value=f"{w_tracks_est:.3f}",
         ))
         arr.status.append(status)
+
+    # ------------------------------------------------------------- завершение
+    def shutdown(self):
+        try:
+            self.left.set_duty(0.0)
+            self.right.set_duty(0.0)
+        except Exception:  # noqa: BLE001
+            pass
+        for drv in (self.left, self.right):
+            try:
+                drv.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def main(args=None):
@@ -590,6 +590,7 @@ def main(args=None):
     except KeyboardInterrupt:
         node.get_logger().info("Остановка узла по сигналу пользователя")
     finally:
+        node.shutdown()
         node.destroy_node()
         rclpy.shutdown()
 

@@ -1,29 +1,33 @@
 # ============================================================================
 # ЛОКАЛИЗАЦИЯ ДЛЯ УЛИЧНОЙ GNSS-НАВИГАЦИИ
 #
+# Датчики:
+#   VESC (kolesa_control -> robot_odom -> /odom): ТОЛЬКО линейная скорость vx.
+#       Угол поворота по разности гусениц НЕ используется нигде.
+#   IMU (imu_stm32_bridge -> /imu/data): абсолютный курс yaw (ENU) и
+#       угловая скорость vyaw. Магнитное склонение уже учтено прошивкой STM32
+#       (параметр `declination` моста), поэтому magnetic_declination_radians = 0.
+#   GNSS (/gps/fix -> navsat_transform -> /odometry/gps): позиция x, y.
+#
 # Схема (официальное руководство Nav2 "Navigating Using GPS Localization"):
 #
-#   /odom (колёсная одометрия) ─┐
-#   /imu/data (курс ENU)        ├─> ekf_filter_node_odom ─> odom -> base_link
-#                               │                            /odometry/local
-#                               │
-#   /odom                       ─┐
-#   /imu/data                    ├─> ekf_filter_node_map  ─> map -> odom
-#   /odometry/gps                ┘                            /odometry/global
+#   /odom (vx)   + /imu/data (yaw, vyaw)                 -> ekf_filter_node_odom
+#                                                            -> odom -> base_link, /odometry/local
+#   /odom (vx)   + /imu/data (yaw, vyaw) + /odometry/gps -> ekf_filter_node_map
+#                                                            -> map -> odom, /odometry/global
+#   /gps/fix + /imu/data + /odometry/global -> navsat_transform -> /odometry/gps
 #
-#   /gps/fix + /imu/data + /odometry/global ─> navsat_transform ─> /odometry/gps
-#
-# ВАЖНО ПРО TF: TF-цепочка обязана быть map -> odom -> base_link -> датчики.
+# ВАЖНО ПРО TF: цепочка map -> odom -> base_link -> датчики.
 #   * map -> odom  публикует ТОЛЬКО ekf_filter_node_map
 #   * odom -> base_link публикует ТОЛЬКО ekf_filter_node_odom
-#   Поэтому у kolesa_control/robot_odom параметр publish_tf ДОЛЖЕН быть false,
-#   иначе два узла будут драться за один и тот же трансформ и робот
-#   «телепортируется» в RViz.
+#   Поэтому у robot_odom параметр publish_tf ДОЛЖЕН быть false.
 #
-# ВАЖНО ПРО КУРС: robot_localization требует АБСОЛЮТНЫЙ курс в соглашении ENU
-#   (0° = ВОСТОК, +90° = СЕВЕР). Его даёт imu_filter_madgwick, а магнитное
-#   склонение снимается узлом mag_declination_node ДО фильтра. Поэтому здесь
-#   magnetic_declination_radians = 0.0 — склонение уже учтено.
+# ВАЖНО ПРО КУРС: robot_localization требует АБСОЛЮТНЫЙ курс в ENU
+#   (0° = ВОСТОК, +90° = СЕВЕР). Его даёт кватернион из imu_stm32_bridge.
+#   Поправка угла монтажа платы задаётся параметром yaw_offset_deg узла
+#   robot_odom (влияет на /odom) и — для imu0 здесь — статическим TF
+#   base_link -> imu_link из URDF (robot_localization сам поворачивает данные
+#   IMU в base_link по TF). Держите оба согласованными.
 # ============================================================================
 
 # ---------------------------------------------------------------- ЛОКАЛЬНЫЙ EKF
@@ -44,25 +48,27 @@ ekf_filter_node_odom:
     base_link_frame: base_link  # корень URDF нашего робота (base_footprint нет)
     world_frame: odom
 
-    # --- Колёсная одометрия: берём ТОЛЬКО СКОРОСТИ ---------------------------
-    # Позицию (x, y) не берём намеренно: гусеничный робот сильно проскальзывает
-    # в поворотах, и накопленная поза от энкодеров быстро становится мусором.
-    # Скорости же измеряются достоверно.
+    # --- Одометрия VESC: берём ТОЛЬКО vx (и vy=0 как ограничение) -----------
+    # Позицию (x, y) не берём: она уже интеграл vx по курсу IMU, EKF сделает
+    # то же сам, но с правильными весами. vyaw из /odom НЕ берём — это тот же
+    # гироскоп, что в imu0, брать его дважды нельзя. vy = 0 — робот не едет
+    # боком; это сильно помогает при скачках GPS.
     # Порядок: [x, y, z, roll, pitch, yaw,
     #           vx, vy, vz, vroll, vpitch, vyaw,
     #           ax, ay, az]
     odom0: /odom
     odom0_config: [false, false, false,
                    false, false, false,
-                   true,  false, false,
-                   false, false, true,
+                   true,  true,  false,
+                   false, false, false,
                    false, false, false]
     odom0_queue_size: 10
     odom0_differential: false
     odom0_relative: false
 
     # --- IMU: абсолютный курс (yaw) + угловая скорость ----------------------
-    # Курс приходит из imu_filter_madgwick уже в ENU и с учётом склонения.
+    # Курс приходит из imu_stm32_bridge уже в ENU и с учётом склонения
+    # (слияние гироскопа, акселерометра и магнитометра сделано в прошивке).
     imu0: /imu/data
     imu0_config: [false, false, false,
                   false, false, true,
@@ -110,12 +116,12 @@ ekf_filter_node_map:
     base_link_frame: base_link
     world_frame: map
 
-    # Колёсная одометрия — снова только скорости
+    # Одометрия VESC — снова только vx (+ vy = 0)
     odom0: /odom
     odom0_config: [false, false, false,
                    false, false, false,
-                   true,  false, false,
-                   false, false, true,
+                   true,  true,  false,
+                   false, false, false,
                    false, false, false]
     odom0_queue_size: 10
     odom0_differential: false
@@ -172,8 +178,9 @@ navsat_transform:
     # Пауза перед первым расчётом: GNSS-приёмнику надо устояться после фикса.
     delay: 3.0
 
-    # Склонение уже снято узлом mag_declination_node, поэтому здесь 0.
-    # НЕ дублируйте склонение тут — получите двойную поправку и увод курса.
+    # Склонение уже учтено прошивкой STM32 (параметр declination у
+    # imu_stm32_bridge), поэтому здесь 0. НЕ дублируйте склонение тут —
+    # получите двойную поправку и увод курса.
     magnetic_declination_radians: 0.0
 
     # Постоянная поправка курса, если известно, что IMU врёт на фиксированный

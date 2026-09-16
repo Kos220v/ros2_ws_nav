@@ -1,0 +1,26 @@
+robot_odom:
+  ros__parameters:
+    vesc_odom_topic: /odom/vesc      # скорость с VESC (kolesa_control)
+    imu_topic: /imu/data             # курс с imu_stm32_bridge
+    odom_topic: /odom
+    odom_frame: odom
+    base_frame: base_link
+    # В полном стеке TF odom->base_link публикует ekf_filter_node_odom.
+    # true — только для автономного теста без robot_localization.
+    publish_tf: false
+    publish_rate: 0.0                # 0 = на каждое сообщение VESC (20 Гц)
+    # absolute: yaw = курс ENU с IMU (нужно для GPS/navsat_transform)
+    # relative: ноль курса — положение при старте (стенд, помещение)
+    yaw_mode: absolute
+    # Поправка монтажа IMU относительно оси X робота, градусы, + против часовой.
+    # Определяется скриптом heading_check (см. README robot_navigation).
+    yaw_offset_deg: 0.0
+    invert_yaw: false
+    imu_timeout: 0.5
+    vesc_timeout: 0.5
+    gyro_fallback: true
+    min_speed_for_integration: 0.005
+    pose_xy_stddev_per_m: 0.05
+    yaw_stddev: 0.03
+    vx_stddev: 0.05
+    wz_stddev: 0.02

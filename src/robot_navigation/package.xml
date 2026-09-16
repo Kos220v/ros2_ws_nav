@@ -9,15 +9,17 @@
     Стек построен по официальному руководству Nav2 "Navigating Using GPS
     Localization" (nav2_gps_waypoint_follower_demo):
 
-      imu_filter_madgwick  -> абсолютный курс ENU (гироскоп+акселерометр+компас)
+      imu_stm32_bridge     -> абсолютный курс ENU (слияние в прошивке STM32)
+      kolesa_control       -> скорость по тахометрам VESC (/odom/vesc)
+      robot_odom           -> /odom = путь VESC + курс IMU
       robot_localization   -> два EKF (odom->base_link и map->odom)
                               + navsat_transform_node (WGS84 -> декартовы координаты)
       nav2                 -> планирование пути, объезд препятствий по лидару,
                               экшен /follow_gps_waypoints
 
     Пакет содержит только конфигурацию, launch-файлы и вспомогательные узлы;
-    драйверы железа живут в своих пакетах (kolesa_control, mpu6050_control,
-    compass_control, ydlidar_ros2_driver, elrs_receiver).
+    драйверы железа живут в своих пакетах (kolesa_control, imu_stm32_bridge,
+    ydlidar_ros2_driver, elrs_receiver, robot_odom).
   </description>
   <maintainer email="you@example.com">you</maintainer>
   <license>MIT</license>
@@ -32,11 +34,13 @@
   <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>action_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
-  <exec_depend>tf_transformations</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
 
   <!-- Локализация -->
   <exec_depend>robot_localization</exec_depend>
-  <exec_depend>imu_filter_madgwick</exec_depend>
+  <exec_depend>robot_odom</exec_depend>
+  <exec_depend>imu_stm32_bridge</exec_depend>
+  <exec_depend>project_start</exec_depend>
 
   <!-- Навигация -->
   <exec_depend>nav2_bringup</exec_depend>
@@ -50,6 +54,8 @@
   <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
   <exec_depend>nav2_navfn_planner</exec_depend>
   <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>nav2_smoother</exec_depend>
+  <exec_depend>nav2_collision_monitor</exec_depend>
   <exec_depend>nav2_simple_commander</exec_depend>
 
   <!-- Драйвер GNSS (NMEA по UART) -->

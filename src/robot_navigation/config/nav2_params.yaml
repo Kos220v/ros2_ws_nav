@@ -322,3 +322,50 @@ velocity_smoother:
     # мультиплексор не слышит, робот просто не едет и никаких ошибок в
     # логах нет. Явное значение защищает от этого.
     enable_stamped_cmd_vel: false
+
+# ---------------------------------------------------------------- COLLISION MONITOR
+# Последний рубеж защиты по лидару, НЕ зависящий от планировщика и костмапов.
+# Стоит между velocity_smoother и мультиплексором:
+#     velocity_smoother -> /cmd_vel_smoothed -> collision_monitor -> /cmd_vel/auto
+# Если препятствие попало в зону stop_zone — скорость обнуляется, в
+# slowdown_zone — режется вдвое. Работает даже если костмап «не успел».
+# Зоны заданы в base_link (X вперёд, Y влево), метры. Подгоните под габариты:
+# колея 0.48 м, лидар сзади-слева (см. URDF), поэтому передняя зона длиннее.
+collision_monitor:
+  ros__parameters:
+    base_frame_id: "base_link"
+    odom_frame_id: "odom"
+    cmd_vel_in_topic: "cmd_vel_smoothed"
+    cmd_vel_out_topic: "cmd_vel/auto"
+    state_topic: "collision_monitor_state"
+    transform_tolerance: 0.3
+    source_timeout: 1.0
+    base_shift_correction: True
+    stop_pub_timeout: 2.0
+    enable_stamped_cmd_vel: false
+    polygons: ["StopZone", "SlowZone"]
+    StopZone:
+      type: "polygon"
+      # прямоугольник перед роботом: 0.45 м вперёд от края корпуса
+      points: "[[0.75, 0.30], [0.75, -0.30], [-0.35, -0.30], [-0.35, 0.30]]"
+      action_type: "stop"
+      min_points: 4
+      visualize: True
+      polygon_pub_topic: "collision_stop_zone"
+      enabled: True
+    SlowZone:
+      type: "polygon"
+      points: "[[1.30, 0.45], [1.30, -0.45], [-0.40, -0.45], [-0.40, 0.45]]"
+      action_type: "slowdown"
+      slowdown_ratio: 0.5
+      min_points: 4
+      visualize: True
+      polygon_pub_topic: "collision_slow_zone"
+      enabled: True
+    observation_sources: ["scan"]
+    scan:
+      type: "scan"
+      topic: "/scan_reliable"
+      min_height: 0.0
+      max_height: 2.0
+      enabled: True

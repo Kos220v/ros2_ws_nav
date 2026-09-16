@@ -17,10 +17,16 @@ navigation.launch.py — стек Nav2 для уличной навигации 
 
     Цепочка получается такая:
         controller_server -> /cmd_vel_nav
-                          -> velocity_smoother (плавный разгон)
+                          -> velocity_smoother (плавный разгон) -> /cmd_vel_smoothed
+                          -> collision_monitor (аварийный стоп по лидару)
                           -> /cmd_vel/auto
                           -> cmd_switcher (приоритеты)
-                          -> /cmd_vel -> kolesa_control
+                          -> /cmd_vel -> kolesa_control (VESC)
+
+  * Объезд препятствий трёхуровневый: глобальный планировщик (NavFn по
+    костмапу с лидаром), локальный контроллер (RPP с проверкой столкновений)
+    и collision_monitor — независимый стоп, если что-то оказалось прямо
+    перед гусеницами.
 """
 
 import os
@@ -43,6 +49,7 @@ LIFECYCLE_NODES = [
     'bt_navigator',
     'waypoint_follower',
     'velocity_smoother',
+    'collision_monitor',
 ]
 
 
@@ -158,9 +165,20 @@ def generate_launch_description():
         parameters=[params_file, common],
         arguments=arguments,
         remappings=[
-            ('cmd_vel', 'cmd_vel_nav'),          # вход
-            ('cmd_vel_smoothed', 'cmd_vel/auto'),  # выход -> в мультиплексор
+            ('cmd_vel', 'cmd_vel_nav'),   # вход; выход /cmd_vel_smoothed -> collision_monitor
         ],
+    )
+
+    collision_monitor = Node(
+        package='nav2_collision_monitor',
+        executable='collision_monitor',
+        name='collision_monitor',
+        output='screen',
+        respawn=True,
+        respawn_delay=2.0,
+        parameters=[params_file, common],
+        arguments=arguments,
+        # вход cmd_vel_smoothed, выход cmd_vel/auto заданы параметрами
     )
 
     lifecycle_manager = Node(
@@ -192,5 +210,6 @@ def generate_launch_description():
         bt_navigator,
         waypoint_follower,
         velocity_smoother,
+        collision_monitor,
         lifecycle_manager,
     ])
