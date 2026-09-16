@@ -1,0 +1,19 @@
+# Стабильные имена USB-UART устройств робота.
+# Установка:
+#   sudo cp udev/99-robot-usb.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty
+#
+# Лидар — единственный CP2102, привязка по чипу.
+# IMU (STM32) и GPS — два ОДИНАКОВЫХ PL2303 без серийного номера, различить
+# их можно только по USB-разъёму (KERNELS). Кабели НЕ переставлять!
+# Свой разъём узнать: udevadm info -a -n /dev/ttyUSBx | grep 'KERNELS=="1-'
+#
+# НЕ используйте скрипты, переименовывающие ttyUSB* на лету
+# (fix_ttyusb_order.sh и т.п.) — они ломают симлинки.
+
+SUBSYSTEM=="tty", KERNEL=="ttyUSB*", MODE="0666"
+SUBSYSTEM=="tty", KERNEL=="ttyACM*", MODE="0666"
+
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="lidar"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", KERNELS=="1-1.3", SYMLINK+="imu_stm32"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", ATTRS{idProduct}=="2303", KERNELS=="1-1.2", SYMLINK+="gps"

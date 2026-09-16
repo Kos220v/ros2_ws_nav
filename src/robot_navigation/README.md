@@ -244,13 +244,19 @@ ros2 topic pub --once /goto/cancel std_msgs/msg/Empty
 | скорости | `nav2_params.yaml`: `desired_linear_vel`, `velocity_smoother.max_velocity`; `kolesa_control.max_linear_velocity` |
 | доверие к датчикам | `config/dual_ekf_navsat.yaml`, `robot_odom/config/odom_params.yaml` |
 
-udev для лидара/GPS (пример, подставьте свои `idVendor`/`idProduct` из
-`udevadm info -a -n /dev/ttyUSB0`):
+udev: готовый файл `udev/99-robot-usb.rules` в корне workspace. IMU и GPS
+сидят на двух одинаковых PL2303 без серийника, поэтому они привязаны к
+USB-разъёмам (`KERNELS=="1-1.3"` — IMU, `1-1.2` — GPS). При переносе в другие
+разъёмы поправьте номера (`udevadm info -a -n /dev/ttyUSBx | grep KERNELS`).
 
+```bash
+sudo cp udev/99-robot-usb.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=tty
+ls -l /dev/lidar /dev/imu_stm32 /dev/gps     # три РАЗНЫХ ttyUSB
 ```
-SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", SYMLINK+="lidar"
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1546", ATTRS{idProduct}=="01a9", SYMLINK+="gps"
-```
+
+Параметры, уже подобранные на роботе: `imu_yaw_offset_deg = -48.0`
+(угол монтажа платы IMU), GPS 115200 бод.
 
 ---
 
@@ -273,6 +279,10 @@ echo /cmd_vel/manual`: пульт держит канал (стики не в н
 `/imu/data` (robot_odom замораживает интеграцию без курса).
 
 **GOAL_OUTSIDE_MAP.** Точка дальше ~60 м от робота — добавьте промежуточные.
+
+**IMU пишет «UART потерян», GPS-драйвер перезапускается.** `/dev/gps` и
+`/dev/imu_stm32` указывают на один порт (`ls -l /dev/gps /dev/imu_stm32`).
+Причина — udev-правило по `067b:2303` без привязки к разъёму. См. п. 5.
 
 **`Failed to find a free participant index`.** Не выполнен `setup_dds.sh`
 или живы процессы прошлых запусков: `pkill -f 'ros2 launch'`.

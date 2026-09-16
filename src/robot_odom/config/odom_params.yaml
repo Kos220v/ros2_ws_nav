@@ -17,7 +17,7 @@ robot_odom:
     yaw_mode: absolute
     # Поправка монтажа IMU относительно оси X робота, градусы, + против часовой.
     # Определяется скриптом heading_check (см. README robot_navigation).
-    yaw_offset_deg: 0.0
+    yaw_offset_deg: -48.0
     invert_yaw: false
     imu_timeout: 0.5
     vesc_timeout: 0.5

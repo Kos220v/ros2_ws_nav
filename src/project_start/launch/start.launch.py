@@ -282,7 +282,7 @@ def generate_launch_description():
                               description='Порт лидара (пусто = автопоиск)'),
         DeclareLaunchArgument('declination_deg', default_value='11.9',
                               description='Магнитное склонение, град (+ восточное)'),
-        DeclareLaunchArgument('imu_yaw_offset_deg', default_value='0.0',
+        DeclareLaunchArgument('imu_yaw_offset_deg', default_value='-48.0',
                               description='Поправка угла монтажа IMU, град'),
         DeclareLaunchArgument('odom_publish_tf', default_value='false',
                               description='robot_odom публикует TF odom->base_link '

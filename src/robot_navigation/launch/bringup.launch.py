@@ -67,7 +67,7 @@ def generate_launch_description():
             description='Магнитное склонение в градусах (+ восточное). '
                         'Узнать: https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml'),
         DeclareLaunchArgument(
-            'imu_yaw_offset_deg', default_value='0.0',
+            'imu_yaw_offset_deg', default_value='-48.0',
             description='Поправка угла монтажа IMU относительно оси X робота, '
                         'градусы (+ против часовой). Определяется heading_check'),
         DeclareLaunchArgument(
