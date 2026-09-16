@@ -18,7 +18,6 @@ robot_odom:
     invert_yaw: false
     imu_timeout: 0.5
     vesc_timeout: 0.5
-    gyro_fallback: true
     min_speed_for_integration: 0.005
     pose_xy_stddev_per_m: 0.05
     yaw_stddev: 0.03

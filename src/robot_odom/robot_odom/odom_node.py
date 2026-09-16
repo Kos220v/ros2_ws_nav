@@ -19,9 +19,10 @@ robot_odom/odom_node — одометрия «VESC + IMU».
 Выход:
 
     /odom       nav_msgs/Odometry   pose.x/y — интеграл v·cos(yaw), v·sin(yaw)
-                                    pose.yaw — курс IMU
+                                    pose.yaw — курс из КВАТЕРНИОНА IMU
                                     twist.linear.x — скорость VESC
-                                    twist.angular.z — гироскоп IMU
+                                    twist.angular.z — гироскоп IMU (справочно,
+                                    в курс НЕ интегрируется ни здесь, ни в EKF)
     TF odom -> base_link            только если publish_tf: true
                                     (в полном стеке TF публикует EKF).
 
@@ -88,7 +89,6 @@ class OdomNode(Node):
         p('invert_yaw', False)          # если IMU смонтирован «вверх ногами»
         p('imu_timeout', 0.5)           # с; при просрочке интеграция замораживается
         p('vesc_timeout', 0.5)
-        p('gyro_fallback', True)        # интегрировать гироскоп, если orientation невалидна
         p('min_speed_for_integration', 0.0)  # м/с; отсечь дрожание нуля
         p('pose_xy_stddev_per_m', 0.05)      # рост неопределённости позиции на метр пути
         p('yaw_stddev', 0.03)                # рад (~1.7°) — доверие к курсу IMU
@@ -108,7 +108,6 @@ class OdomNode(Node):
         self.invert_yaw = bool(g('invert_yaw').value)
         self.imu_timeout = float(g('imu_timeout').value)
         self.vesc_timeout = float(g('vesc_timeout').value)
-        self.gyro_fallback = bool(g('gyro_fallback').value)
         self.min_speed = float(g('min_speed_for_integration').value)
         self.xy_std_per_m = float(g('pose_xy_stddev_per_m').value)
         self.yaw_std = float(g('yaw_stddev').value)
@@ -124,6 +123,7 @@ class OdomNode(Node):
         self.yaw = 0.0                 # текущий курс (уже с поправками)
         self.yaw_ref = None            # ноль для режима relative
         self.imu_yaw_raw = None        # последний курс IMU (после offset/inversion)
+        self.prev_yaw = None           # курс на предыдущем такте VESC
         self.imu_has_orientation = False
         self.wz = 0.0
         self.vx = 0.0
@@ -201,16 +201,14 @@ class OdomNode(Node):
                 self.yaw = normalize_angle(yaw_raw - self.yaw_ref)
             else:
                 self.yaw = yaw_raw
-        elif self.gyro_fallback:
-            # Ориентации нет (ещё калибруется / только гироскоп) — интегрируем wz.
-            if self.last_imu_stamp_s is not None:
-                dt = stamp_s - self.last_imu_stamp_s
-                if 0.0 < dt < 1.0:
-                    self.yaw = normalize_angle(self.yaw + self.wz * dt)
+        else:
+            # Ориентации нет — курс НЕ трогаем и гироскоп НЕ интегрируем:
+            # угол берётся только из готового кватерниона IMU.
+            self.imu_has_orientation = False
             if not self._warned_imu:
                 self.get_logger().warning(
-                    'IMU не даёт ориентацию — курс интегрируется по гироскопу '
-                    '(дрейфует!). Дождитесь калибровки imu_stm32_bridge.')
+                    'IMU не даёт ориентацию — позиция не интегрируется. '
+                    'Дождитесь калибровки imu_stm32_bridge.')
                 self._warned_imu = True
 
         self.last_imu_stamp_s = stamp_s
@@ -226,14 +224,16 @@ class OdomNode(Node):
             dt = (now - self.last_vesc_time).nanoseconds * 1e-9
             imu_fresh = (self.last_imu_time is not None
                          and (now - self.last_imu_time).nanoseconds * 1e-9 < self.imu_timeout)
-            if 0.0 < dt < 1.0 and imu_fresh:
-                # Курс за такт меняется мало (IMU 50 Гц, VESC 20 Гц):
-                # используем среднюю точку по гироскопу.
-                mid_yaw = self.yaw - 0.5 * self.wz * dt
+            if 0.0 < dt < 1.0 and imu_fresh and self.imu_has_orientation:
+                # Средний курс за такт — по двум последовательным кватернионам.
+                mid_yaw = self.yaw
+                if self.prev_yaw is not None:
+                    mid_yaw = self.yaw + 0.5 * normalize_angle(self.prev_yaw - self.yaw)
                 ds = 0.5 * (self.vx + vx) * dt
                 self.x += ds * math.cos(mid_yaw)
                 self.y += ds * math.sin(mid_yaw)
                 self.distance += abs(ds)
+            self.prev_yaw = self.yaw
 
         self.vx = vx
         self.last_vesc_time = now

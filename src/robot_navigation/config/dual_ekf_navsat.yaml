@@ -66,14 +66,17 @@ ekf_filter_node_odom:
     odom0_differential: false
     odom0_relative: false
 
-    # --- IMU: абсолютный курс (yaw) + угловая скорость ----------------------
+    # --- IMU: абсолютный курс (yaw) из готового кватерниона -----------------
     # Курс приходит из imu_stm32_bridge уже в ENU и с учётом склонения
     # (слияние гироскопа, акселерометра и магнитометра сделано в прошивке).
     imu0: /imu/data
+    # Берём ТОЛЬКО абсолютный yaw из кватерниона. vyaw (гироскоп) НЕ берём:
+    # смещение нуля гироскопа EKF интегрирует в угол, и робот в RViz
+    # «вращается на месте». Ориентацию уже сфьюзила прошивка STM32.
     imu0_config: [false, false, false,
                   false, false, true,
                   false, false, false,
-                  false, false, true,
+                  false, false, false,
                   false, false, false]
     imu0_differential: false
     imu0_relative: false
@@ -139,10 +142,13 @@ ekf_filter_node_map:
     odom1_relative: false
 
     imu0: /imu/data
+    # Берём ТОЛЬКО абсолютный yaw из кватерниона. vyaw (гироскоп) НЕ берём:
+    # смещение нуля гироскопа EKF интегрирует в угол, и робот в RViz
+    # «вращается на месте». Ориентацию уже сфьюзила прошивка STM32.
     imu0_config: [false, false, false,
                   false, false, true,
                   false, false, false,
-                  false, false, true,
+                  false, false, false,
                   false, false, false]
     imu0_differential: false
     imu0_relative: false
