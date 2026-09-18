@@ -36,10 +36,10 @@
 # локальную систему координат, иначе Nav2 будет дёргать траекторию.
 ekf_filter_node_odom:
   ros__parameters:
-    frequency: 20.0   # Pi4: 30 Гц не укладывается в такт ("Failed to meet update rate")
-    sensor_timeout: 0.5
+    frequency: 20.0
+    sensor_timeout: 1.0
     two_d_mode: true            # робот ездит по (почти) плоской поверхности
-    print_diagnostics: true
+    print_diagnostics: false   # на Pi4 ощутимо ест CPU
     debug: false
     publish_tf: true
 
@@ -109,10 +109,13 @@ ekf_filter_node_odom:
 # в Nav2 существует разделение на map и odom.
 ekf_filter_node_map:
   ros__parameters:
-    frequency: 20.0   # Pi4: 30 Гц не укладывается в такт ("Failed to meet update rate")
-    sensor_timeout: 0.5
+    # 10 Гц: этот фильтр только корректирует map -> odom по GPS; Nav2 берёт
+    # скорости из /odometry/local (20 Гц). На Pi4 при 20-30 Гц не укладывался
+    # в такт ("Failed to meet update rate").
+    frequency: 10.0
+    sensor_timeout: 1.0
     two_d_mode: true
-    print_diagnostics: true
+    print_diagnostics: false   # на Pi4 ощутимо ест CPU
     debug: false
     publish_tf: true
 
@@ -183,7 +186,7 @@ ekf_filter_node_map:
 # /follow_gps_waypoints — без этого узла GPS-точки навигатору не отдать.
 navsat_transform:
   ros__parameters:
-    frequency: 20.0   # Pi4: 30 Гц не укладывается в такт ("Failed to meet update rate")
+    frequency: 10.0   # достаточно для коррекции по GPS (сам GPS 10 Гц)
 
     # Пауза перед первым расчётом: GNSS-приёмнику надо устояться после фикса.
     delay: 3.0

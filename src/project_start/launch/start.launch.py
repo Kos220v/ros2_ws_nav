@@ -165,7 +165,7 @@ def launch_setup(context, *args, **kwargs):
                 'port': imu_port,
                 'baud': 115200,
                 'frame_id': 'imu_link',
-                'rate': 50,
+                'rate': 25,   # 25 Гц достаточно для курса; меньше нагрузка на Pi4
                 # Магнитное склонение, градусы (+ восточное). Пересчитайте для
                 # своей местности: https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml
                 'declination': ParameterValue(
